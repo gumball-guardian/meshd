@@ -1,4 +1,4 @@
-module mesh
+module github.com/gumball-guardian/meshd
 
 go 1.16
 

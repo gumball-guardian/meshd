@@ -1,92 +1,13 @@
-package main
+package meshd
 
 import (
-	"crypto/tls"
-	"flag"
-	"fmt"
-	"github.com/gorilla/websocket"
 	"html/template"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
+
+	"github.com/gorilla/websocket"
 )
-
-var serverTlsAddr = flag.String("serverTlsAddr", ":4443", "https service address")
-var clientTlsAddr = flag.String("clientTlsAddr", "100.119.2.72:4443", "https client address")
-
-func client() {
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-
-	u := url.URL{Scheme: "wss", Host: *clientTlsAddr, Path: "/socket"}
-	log.Printf("connecting to %s", u.String())
-	dialer := websocket.DefaultDialer
-	tlsConfig := tls.Config{
-		NextProtos:            nil,
-		ServerName:            "mesh",
-		InsecureSkipVerify:    true,
-		CipherSuites: []uint16{	tls.TLS_AES_256_GCM_SHA384 },
-		PreferServerCipherSuites:    true,
-		MinVersion:                  tls.VersionTLS13,
-		MaxVersion:                  tls.VersionTLS13,
-	}
-	dialer.TLSClientConfig = &tlsConfig
-	c, _, err := dialer.Dial(u.String(), nil)
-	if err != nil {
-		log.Fatal("dial:", err)
-	}
-	defer c.Close()
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			_, message, err := c.ReadMessage()
-			if err != nil {
-				log.Println("read:", err)
-				return
-			}
-			log.Printf("recv: %s", message)
-		}
-	}()
-
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-done:
-			return
-		case t := <-ticker.C:
-			err := c.WriteMessage(websocket.TextMessage, []byte(t.String()))
-			if err != nil {
-				log.Println("write:", err)
-				return
-			}
-		case <-interrupt:
-			log.Println("interrupt")
-
-			// Cleanly close the connection by sending a close message and then
-			// waiting (with timeout) for the server to close the connection.
-			err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-			if err != nil {
-				log.Println("write close:", err)
-				return
-			}
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-			}
-			return
-		}
-	}
-}
 
 func resolve(hostname string) []net.IP {
 	ips, err := net.LookupIP(hostname)
@@ -125,44 +46,12 @@ func index(w http.ResponseWriter, r *http.Request) {
 	indexTemplate.Execute(w, "wss://"+r.Host+"/socket")
 }
 
-func launchHttps() {
+func ServeTLS(addr string) error {
 	http.HandleFunc("/socket", socket)
 	http.HandleFunc("/", index)
 
-	log.Fatal(http.ListenAndServeTLS(*serverTlsAddr, "server.crt", "server.key", nil))
+	return http.ListenAndServeTLS(addr, "server.crt", "server.key", nil)
 }
-
-func main() {
-	flag.Parse()
-	log.SetFlags(0)
-
-	go launchHttps()
-	time.Sleep(1 * time.Second)
-	go client()
-
-	exitSignal := make(chan os.Signal)
-	signal.Notify(exitSignal, syscall.SIGINT, syscall.SIGTERM)
-	<-exitSignal
-
-	//systemTeardown()
-
-	list, err := net.Interfaces()
-	if err != nil {
-		panic(err)
-	}
-
-	for i, iface := range list {
-		fmt.Printf("%d name=%s %v\n", i, iface.Name, iface)
-		addrs, err := iface.Addrs()
-		if err != nil {
-			panic(err)
-		}
-		for j, addr := range addrs {
-			fmt.Printf(" %d %v\n", j, addr)
-		}
-	}
-}
-
 
 var indexTemplate = template.Must(template.New("").Parse(`
 <!DOCTYPE html>
